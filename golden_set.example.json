@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {
+      "question_id": "neg_17",
+      "question": "what was the q3 2019 revenue?",
+      "expected_answer": "not in documents",
+      "trap_chunk_id": "chunk_847",
+      "trap_anchor": "2-3 ms",
+      "embedder_tag": "text-embedding-3-small@2024-02-15",
+      "last_validated": "2024-02-15"
+    },
+    {
+      "question_id": "neg_18",
+      "question": "which clause covers force majeure in the 2021 msa?",
+      "expected_answer": "not in documents",
+      "trap_chunk_id": "chunk_1204",
+      "trap_anchor": "force majeure",
+      "embedder_tag": "bge-large-v1.5@2024-06-02",
+      "last_validated": "2024-06-02"
+    }
+  ]
+}
