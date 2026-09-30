@@ -5,17 +5,28 @@ Verdicts:
   fail             - trap retrieved BUT the model answered anyway
   test did not run - the trap chunk never reached the model
 
-Companion code to the Dev.to post "The Negative Test That Passed for the
-Wrong Reason". Not a library: copy the pieces you need.
+Every run stamps the trap's retrieved rank back into the row, so the last
+run before a swap is the pre-swap baseline and the re-validation queue
+sorts itself from the repo alone. Companion code to the Dev.to post "The
+Negative Test That Passed for the Wrong Reason". Not a library: copy the
+pieces you need.
 """
 
 import json
+from datetime import date
 
 
 def load_golden_set(path="golden_set.example.json"):
     """Load negative-test rows from the golden set file."""
     with open(path) as f:
         return json.load(f)["tests"]
+
+
+def save_golden_set(rows, path="golden_set.example.json"):
+    """Persist row stamps (last_rank, last_validated) back to the file."""
+    with open(path, "w") as f:
+        json.dump({"tests": rows}, f, indent=2)
+        f.write("\n")
 
 
 def evaluate(test, retrieved_chunk_ids, model_answer):
@@ -29,6 +40,18 @@ def evaluate(test, retrieved_chunk_ids, model_answer):
     if model_answer.strip().lower() == test["expected_answer"].strip().lower():
         return "pass"
     return "fail"
+
+
+def rank_of(test, retrieved_ids):
+    """1-indexed position of the trap in the retrieved order, or None.
+
+    Rank 1 is the first item the retriever returned. A trap that never
+    arrived has no rank, which is the "test did not run" case; the absence
+    is itself the information the re-validation queue needs.
+    """
+    if test["trap_chunk_id"] not in retrieved_ids:
+        return None
+    return retrieved_ids.index(test["trap_chunk_id"]) + 1
 
 
 def is_stale(test, current_embedder):
@@ -51,27 +74,57 @@ def resolve_anchor(index_chunks, test):
     return hits[0] if hits else "STALE"
 
 
-def run(retrieve_fn, ask_fn, index_chunks, current_embedder="bge-large-v1.5"):
+def revalidation_queue(rows, cutoff=5):
+    """Order rows boundary-neighbors-first using the stamped ranks.
+
+    Rows whose last_rank sat closest to the retrieval cutoff are the ones a
+    small shift drops entirely, so they re-run first. Rows with no stamped
+    rank (the trap never arrived) go to the front: their verdict is the
+    least known. Needs nothing but the repo.
+    """
+    def key(row):
+        rank = row.get("last_rank")
+        if rank is None:
+            return (0, 0)
+        return (1, abs(rank - cutoff))
+    return sorted(rows, key=key)
+
+
+def run(retrieve_fn, ask_fn, index_chunks, current_embedder="bge-large-v1.5",
+        write_back=False, path="golden_set.example.json"):
     """Run the whole negative suite and print one line per row.
 
     retrieve_fn(question) -> list of chunk dicts with "id" and "text"
     ask_fn(question, retrieved) -> the model's answer string
     index_chunks -> the current full index, for anchor re-resolution
+    write_back -> stamp last_rank and last_validated into the rows on disk
+
+    With write_back on, every run is the pre-swap baseline for the next
+    swap: the rank the trap held today is the rank the re-run queue will
+    sort by tomorrow, with no chunk-diff sidecar.
     """
+    rows = load_golden_set(path)
     results = []
-    for test in load_golden_set():
+    for test in rows:
         retrieved = retrieve_fn(test["question"])
+        ids = [c["id"] for c in retrieved]
         answer = ask_fn(test["question"], retrieved)
-        verdict = evaluate(test, [c["id"] for c in retrieved], answer)
+        verdict = evaluate(test, ids, answer)
         stale = is_stale(test, current_embedder)
         anchor = resolve_anchor(index_chunks, test)
+        rank = rank_of(test, ids)
         if anchor != "STALE" and anchor != test["trap_chunk_id"]:
             verdict = "re-stamp needed"
-        results.append((test["question_id"], verdict, stale, anchor))
-        print(f"{test['question_id']:8} {verdict:16} stale={stale} anchor={anchor}")
+        if write_back:
+            test["last_rank"] = rank
+            test["last_validated"] = date.today().isoformat()
+        results.append((test["question_id"], verdict, stale, anchor, rank))
+        print(f"{test['question_id']:8} {verdict:16} stale={stale} rank={rank} anchor={anchor}")
+    if write_back:
+        save_golden_set(rows, path)
     return results
 
 
 if __name__ == "__main__":
     print("Wire retrieve_fn, ask_fn and index_chunks to your pipeline,")
-    print("then call run(). See README.md for the design rules.")
+    print("then call run(write_back=True). See README.md for the design rules.")
